@@ -77,6 +77,45 @@ app.get('/api/pedidos/activos', (req, res) => {
   });
 });
 
+// ==========================================
+// RUTA DE SEGURIDAD: LOGIN CON PIN
+// ==========================================
+app.post('/api/login', (req, res) => {
+  const { pin } = req.body;
+
+  // 1. Verificamos que el usuario sí haya enviado un PIN
+  if (!pin) {
+    return res.status(400).json({ error: 'Por favor, ingresa tu PIN.' });
+  }
+
+  // 2. Buscamos en la base de datos (El símbolo "?" nos protege de hackers / Inyección SQL)
+  const sql = 'SELECT id, nombre, rol FROM usuarios WHERE pin = ? AND estado = true';
+
+  db.query(sql, [pin], (err, results) => {
+    if (err) {
+      console.error('Error al intentar iniciar sesión:', err);
+      return res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+
+    // 3. Revisamos si encontramos al usuario
+    if (results.length > 0) {
+      // ¡PIN correcto! Le devolvemos los datos del trabajador (sin el PIN, por seguridad)
+      const usuarioEncontrado = results[0];
+      res.json({
+        exito: true,
+        mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`,
+        usuario: usuarioEncontrado
+      });
+    } else {
+      // PIN incorrecto o usuario inactivo
+      res.status(401).json({
+        exito: false,
+        error: 'PIN incorrecto. Intenta de nuevo.'
+      });
+    }
+  });
+});
+
 // 2. ACTUALIZAR el estado de un pedido (Ej: pasarlo a "Listo" o "Cobrado")
 app.put('/api/pedidos/:id/estado', (req, res) => {
   const idPedido = req.params.id;
