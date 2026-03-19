@@ -48,6 +48,43 @@ app.get('/api/platos', (req, res) => {
 
 // --- RUTAS PARA EL PANEL DE ADMINISTRACIÓN ---
 
+// ==========================================
+// RUTAS DE ADMINISTRACIÓN DE MENÚ
+// ==========================================
+
+// 1. Agregar un plato nuevo
+app.post('/api/platos', (req, res) => {
+  const { nombre, descripcion, precio, categoria } = req.body;
+  
+  // Validamos que no envíen datos vacíos
+  if (!nombre || !precio || !categoria) {
+    return res.status(400).json({ error: 'Faltan datos obligatorios' });
+  }
+
+  const sql = 'INSERT INTO platos (nombre, descripcion, precio, categoria) VALUES (?, ?, ?, ?)';
+  db.query(sql, [nombre, descripcion, precio, categoria], (err, result) => {
+    if (err) {
+      console.error('Error al guardar plato:', err);
+      return res.status(500).json({ error: 'Error al guardar en la base de datos' });
+    }
+    res.json({ exito: true, id: result.insertId, mensaje: '¡Plato agregado al menú!' });
+  });
+});
+
+// 2. Eliminar un plato
+app.delete('/api/platos/:id', (req, res) => {
+  const { id } = req.params;
+  const sql = 'DELETE FROM platos WHERE id = ?';
+  
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error('Error al eliminar plato:', err);
+      return res.status(500).json({ error: 'Error al eliminar de la base de datos' });
+    }
+    res.json({ exito: true, mensaje: 'Plato eliminado correctamente' });
+  });
+});
+
 // 1. OBTENER todos los pedidos activos (Pendientes o Listos)
 app.get('/api/pedidos/activos', (req, res) => {
   // Esta consulta mágica une la cabecera del pedido con los platos que pidieron
