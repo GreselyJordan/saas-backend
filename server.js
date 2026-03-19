@@ -5,13 +5,17 @@ const cors = require('cors');
 
 const app = express();
 
+// ==========================================
+// CONFIGURACIÓN DE MIDDLEWARES
+// ==========================================
 // Permite que React se conecte al backend
 app.use(cors());
 // Permite que el servidor entienda datos en formato JSON
 app.use(express.json());
 
-// 1. Configuración de la conexión a MySQL
-// 1. Configuración de la conexión a MySQL (Usando variables seguras)
+// ==========================================
+// CONFIGURACIÓN DE LA CONEXIÓN A MYSQL
+// ==========================================
 const db = mysql.createConnection({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
@@ -32,31 +36,62 @@ db.connect((err) => {
   console.log('¡Conectado a la base de datos MySQL con éxito!');
 });
 
-// 2. Creamos una "Ruta" (Endpoint) para pedir los platos
+// ==========================================
+// RUTAS DE SEGURIDAD: LOGIN
+// ==========================================
+
+// Login con PIN
+app.post('/api/login', (req, res) => {
+  const { pin } = req.body;
+
+  if (!pin) {
+    return res.status(400).json({ error: 'Por favor, ingresa tu PIN.' });
+  }
+
+  const sql = 'SELECT id, nombre, rol FROM usuarios WHERE pin = ? AND estado = true';
+
+  db.query(sql, [pin], (err, results) => {
+    if (err) {
+      console.error('Error al intentar iniciar sesión:', err);
+      return res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+
+    if (results.length > 0) {
+      const usuarioEncontrado = results[0];
+      res.json({
+        exito: true,
+        mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`,
+        usuario: usuarioEncontrado
+      });
+    } else {
+      res.status(401).json({
+        exito: false,
+        error: 'PIN incorrecto. Intenta de nuevo.'
+      });
+    }
+  });
+});
+
+// ==========================================
+// RUTAS DE ADMINISTRACIÓN DE MENÚ (PLATOS)
+// ==========================================
+
+// 1. Obtener todos los platos
 app.get('/api/platos', (req, res) => {
   const sql = "SELECT * FROM platos";
 
   db.query(sql, (err, result) => {
     if (err) {
-      res.status(500).send('Error obteniendo los platos');
-      return;
+      return res.status(500).send('Error obteniendo los platos');
     }
-    // Si todo sale bien, enviamos los datos a React
     res.json(result);
   });
 });
 
-// --- RUTAS PARA EL PANEL DE ADMINISTRACIÓN ---
-
-// ==========================================
-// RUTAS DE ADMINISTRACIÓN DE MENÚ
-// ==========================================
-
-// 1. Agregar un plato nuevo
+// 2. Agregar un plato nuevo
 app.post('/api/platos', (req, res) => {
   const { nombre, descripcion, precio, categoria } = req.body;
   
-  // Validamos que no envíen datos vacíos
   if (!nombre || !precio || !categoria) {
     return res.status(400).json({ error: 'Faltan datos obligatorios' });
   }
@@ -71,7 +106,7 @@ app.post('/api/platos', (req, res) => {
   });
 });
 
-// 2. Eliminar un plato
+// 3. Eliminar un plato
 app.delete('/api/platos/:id', (req, res) => {
   const { id } = req.params;
   const sql = 'DELETE FROM platos WHERE id = ?';
@@ -85,9 +120,12 @@ app.delete('/api/platos/:id', (req, res) => {
   });
 });
 
-// 1. OBTENER todos los pedidos activos (Pendientes o Listos)
+// ==========================================
+// RUTAS DE PEDIDOS
+// ==========================================
+
+// 1. Obtener todos los pedidos activos (Pendientes o Listos)
 app.get('/api/pedidos/activos', (req, res) => {
-  // Esta consulta mágica une la cabecera del pedido con los platos que pidieron
   const sql = `
     SELECT p.id, p.mesa, p.estado, p.total, p.fecha_creacion,
            (SELECT GROUP_CONCAT(CONCAT(cantidad, 'x ', plato_nombre) SEPARATOR ', ')
@@ -100,13 +138,12 @@ app.get('/api/pedidos/activos', (req, res) => {
   db.query(sql, (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo pedidos' });
 
-    // Formateamos los datos para que React los entienda fácil
     const pedidosFormateados = result.map(p => ({
       id: p.id,
       mesa: p.mesa,
       estado: p.estado,
       total: Number(p.total),
-      tiempo: 'Reciente', // Podríamos calcular los minutos reales aquí después
+      tiempo: 'Reciente', 
       items: p.items_desc ? p.items_desc.split(', ') : []
     }));
 
@@ -114,46 +151,38 @@ app.get('/api/pedidos/activos', (req, res) => {
   });
 });
 
-// ==========================================
-// RUTA DE SEGURIDAD: LOGIN CON PIN
-// ==========================================
-app.post('/api/login', (req, res) => {
-  const { pin } = req.body;
+// 2. Crear un nuevo pedido
+app.post('/api/pedidos', (req, res) => {
+  const { mesa, total, items } = req.body;
 
-  // 1. Verificamos que el usuario sí haya enviado un PIN
-  if (!pin) {
-    return res.status(400).json({ error: 'Por favor, ingresa tu PIN.' });
-  }
+  const sqlPedido = "INSERT INTO pedidos (mesa, total) VALUES (?, ?)";
 
-  // 2. Buscamos en la base de datos (El símbolo "?" nos protege de hackers / Inyección SQL)
-  const sql = 'SELECT id, nombre, rol FROM usuarios WHERE pin = ? AND estado = true';
-
-  db.query(sql, [pin], (err, results) => {
+  db.query(sqlPedido, [mesa, total], (err, result) => {
     if (err) {
-      console.error('Error al intentar iniciar sesión:', err);
-      return res.status(500).json({ error: 'Error interno del servidor.' });
+      console.error(err);
+      return res.status(500).json({ error: 'Error al guardar el pedido' });
     }
 
-    // 3. Revisamos si encontramos al usuario
-    if (results.length > 0) {
-      // ¡PIN correcto! Le devolvemos los datos del trabajador (sin el PIN, por seguridad)
-      const usuarioEncontrado = results[0];
-      res.json({
-        exito: true,
-        mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`,
-        usuario: usuarioEncontrado
+    const nuevoPedidoId = result.insertId; 
+
+    if (items && items.length > 0) {
+      const valoresDetalle = items.map(item => [nuevoPedidoId, item.nombre, item.cantidad, item.subtotal]);
+      const sqlDetalle = "INSERT INTO detalle_pedidos (pedido_id, plato_nombre, cantidad, subtotal) VALUES ?";
+
+      db.query(sqlDetalle, [valoresDetalle], (errDetalle) => {
+        if (errDetalle) {
+          console.error(errDetalle);
+          return res.status(500).json({ error: 'Error al guardar el detalle del pedido' });
+        }
+        res.status(201).json({ mensaje: '¡Pedido registrado con éxito!', id: nuevoPedidoId });
       });
     } else {
-      // PIN incorrecto o usuario inactivo
-      res.status(401).json({
-        exito: false,
-        error: 'PIN incorrecto. Intenta de nuevo.'
-      });
+      res.status(201).json({ mensaje: 'Pedido creado sin platos (solo cabecera)', id: nuevoPedidoId });
     }
   });
 });
 
-// 2. ACTUALIZAR el estado de un pedido (Ej: pasarlo a "Listo" o "Cobrado")
+// 3. Actualizar el estado de un pedido (Ej: pasarlo a "Listo" o "Cobrado")
 app.put('/api/pedidos/:id/estado', (req, res) => {
   const idPedido = req.params.id;
   const nuevoEstado = req.body.estado;
@@ -165,22 +194,12 @@ app.put('/api/pedidos/:id/estado', (req, res) => {
   });
 });
 
-// --- RUTAS PARA LA CAJA DIARIA ---
+// ==========================================
+// RUTAS PARA LA CAJA DIARIA
+// ==========================================
 
-// 1. GUARDAR un nuevo gasto
-app.post('/api/caja/gasto', (req, res) => {
-  const { descripcion, monto } = req.body;
-  const sql = "INSERT INTO gastos (descripcion, monto) VALUES (?, ?)";
-
-  db.query(sql, [descripcion, monto], (err, result) => {
-    if (err) return res.status(500).json({ error: 'Error guardando el gasto' });
-    res.status(201).json({ mensaje: 'Gasto registrado con éxito' });
-  });
-});
-
-// 2. OBTENER todos los movimientos (Ingresos unidos con Gastos)
+// 1. Obtener todos los movimientos (Ingresos unidos con Gastos)
 app.get('/api/caja/movimientos', (req, res) => {
-  // TRUCO SQL (UNION ALL): Juntamos la tabla de pedidos con la tabla de gastos en una sola lista
   const sql = `
     SELECT id, CONCAT('Cobro Mesa ', mesa) AS descripcion, total AS monto, 'ingreso' AS tipo, fecha_creacion AS fecha_real, DATE_FORMAT(fecha_creacion, '%h:%i %p') AS hora 
     FROM pedidos WHERE estado = 'Cobrado'
@@ -195,51 +214,25 @@ app.get('/api/caja/movimientos', (req, res) => {
 
   db.query(sql, (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo la caja' });
-
-    // Como MySQL ya nos devuelve el formato 'ingreso' o 'gasto', React lo lee directo
     res.json(result);
   });
 });
 
-// 3. Encendemos el servidor en el puerto 3001
-const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`Servidor Backend corriendo en http://localhost:${PORT}`);
+// 2. Guardar un nuevo gasto
+app.post('/api/caja/gasto', (req, res) => {
+  const { descripcion, monto } = req.body;
+  const sql = "INSERT INTO gastos (descripcion, monto) VALUES (?, ?)";
+
+  db.query(sql, [descripcion, monto], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error guardando el gasto' });
+    res.status(201).json({ mensaje: 'Gasto registrado con éxito' });
+  });
 });
 
-// Ruta para RECIBIR un nuevo pedido desde React
-app.post('/api/pedidos', (req, res) => {
-  // Extraemos los datos que nos enviará React (ej. { mesa: 4, total: 18.50, items: [...] })
-  const { mesa, total, items } = req.body;
-
-  // 1. Primero insertamos la cabecera del pedido
-  const sqlPedido = "INSERT INTO pedidos (mesa, total) VALUES (?, ?)";
-
-  db.query(sqlPedido, [mesa, total], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Error al guardar el pedido' });
-    }
-
-    const nuevoPedidoId = result.insertId; // El ID que MySQL le asignó a este pedido
-
-    // 2. Si hay platos (items), los guardamos en el detalle
-    if (items && items.length > 0) {
-      // Preparamos los datos para insertarlos de golpe
-      const valoresDetalle = items.map(item => [nuevoPedidoId, item.nombre, item.cantidad, item.subtotal]);
-      const sqlDetalle = "INSERT INTO detalle_pedidos (pedido_id, plato_nombre, cantidad, subtotal) VALUES ?";
-
-      db.query(sqlDetalle, [valoresDetalle], (errDetalle) => {
-        if (errDetalle) {
-          console.error(errDetalle);
-          return res.status(500).json({ error: 'Error al guardar el detalle del pedido' });
-        }
-        // Todo salió perfecto
-        res.status(201).json({ mensaje: '¡Pedido registrado con éxito!', id: nuevoPedidoId });
-      });
-    } else {
-      // Si por alguna razón enviaron un pedido sin platos
-      res.status(201).json({ mensaje: 'Pedido creado sin platos (solo cabecera)', id: nuevoPedidoId });
-    }
-  });
+// ==========================================
+// INICIO DEL SERVIDOR
+// ==========================================
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Servidor Backend corriendo en http://localhost:${PORT}`);
 });
