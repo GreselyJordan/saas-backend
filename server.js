@@ -131,7 +131,7 @@ app.get('/api/pedidos/activos', (req, res) => {
            (SELECT GROUP_CONCAT(CONCAT(cantidad, 'x ', plato_nombre) SEPARATOR ', ')
             FROM detalle_pedidos dp WHERE dp.pedido_id = p.id) as items_desc
     FROM pedidos p
-    WHERE p.estado != 'Cobrado'
+    WHERE p.estado NOT IN ('Cobrado', 'Anulado')
     ORDER BY p.id ASC
   `;
 
