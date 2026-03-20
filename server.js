@@ -151,6 +151,33 @@ app.get('/api/pedidos/activos', (req, res) => {
   });
 });
 
+// 1.5 Obtener todos los pedidos anulados
+app.get('/api/pedidos/anulados', (req, res) => {
+  const sql = `
+    SELECT p.id, p.mesa, p.estado, p.total, p.fecha_creacion,
+           (SELECT GROUP_CONCAT(CONCAT(cantidad, 'x ', plato_nombre) SEPARATOR ', ')
+            FROM detalle_pedidos dp WHERE dp.pedido_id = p.id) as items_desc
+    FROM pedidos p
+    WHERE p.estado = 'Anulado'
+    ORDER BY p.fecha_creacion DESC
+  `;
+
+  db.query(sql, (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error obteniendo pedidos anulados' });
+
+    const pedidosFormateados = result.map(p => ({
+      id: p.id,
+      mesa: p.mesa,
+      estado: p.estado,
+      total: Number(p.total),
+      tiempo: 'Reciente', 
+      items: p.items_desc ? p.items_desc.split(', ') : []
+    }));
+
+    res.json(pedidosFormateados);
+  });
+});
+
 // 2. Crear un nuevo pedido
 app.post('/api/pedidos', (req, res) => {
   const { mesa, total, items } = req.body;
