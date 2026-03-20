@@ -2,8 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
 
 // ==========================================
 // CONFIGURACIÓN DE MIDDLEWARES
@@ -201,9 +205,11 @@ app.post('/api/pedidos', (req, res) => {
           console.error(errDetalle);
           return res.status(500).json({ error: 'Error al guardar el detalle del pedido' });
         }
+        io.emit('nuevo_pedido'); // <--- NOTIFICACIÓN SOCKET.IO
         res.status(201).json({ mensaje: '¡Pedido registrado con éxito!', id: nuevoPedidoId });
       });
     } else {
+      io.emit('nuevo_pedido'); // <--- NOTIFICACIÓN SOCKET.IO
       res.status(201).json({ mensaje: 'Pedido creado sin platos (solo cabecera)', id: nuevoPedidoId });
     }
   });
@@ -257,9 +263,45 @@ app.post('/api/caja/gasto', (req, res) => {
 });
 
 // ==========================================
+// RUTAS DE ESTADÍSTICAS
+// ==========================================
+
+// 1. Obtener ventas de los últimos 7 días
+app.get('/api/estadisticas/ventas', (req, res) => {
+  const sql = `
+    SELECT DATE_FORMAT(fecha_creacion, '%Y-%m-%d') as fecha, SUM(total) as total_ventas
+    FROM pedidos
+    WHERE estado = 'Cobrado' AND fecha_creacion >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+    GROUP BY fecha
+    ORDER BY fecha ASC
+  `;
+  db.query(sql, (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error obteniendo estadísticas' });
+    res.json(result);
+  });
+});
+
+// 2. Obtener los platos más vendidos
+app.get('/api/estadisticas/top-platos', (req, res) => {
+  const sql = `
+    SELECT plato_nombre as nombre, SUM(cantidad) as ventas
+    FROM detalle_pedidos dp
+    JOIN pedidos p ON dp.pedido_id = p.id
+    WHERE p.estado = 'Cobrado'
+    GROUP BY plato_nombre
+    ORDER BY ventas DESC
+    LIMIT 5
+  `;
+  db.query(sql, (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error obteniendo top platos' });
+    res.json(result);
+  });
+});
+
+// ==========================================
 // INICIO DEL SERVIDOR
 // ==========================================
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Servidor Backend corriendo en http://localhost:${PORT}`);
 });
