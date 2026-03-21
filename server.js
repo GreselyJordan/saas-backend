@@ -4,17 +4,18 @@ const mysql = require('mysql2');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
+const SECRET_KEY = process.env.JWT_SECRET || 'huecas-super-secret-key';
+
 // ==========================================
 // CONFIGURACIÓN DE MIDDLEWARES
 // ==========================================
-// Permite que React se conecte al backend
 app.use(cors());
-// Permite que el servidor entienda datos en formato JSON
 app.use(express.json());
 
 // ==========================================
@@ -27,11 +28,10 @@ const db = mysql.createConnection({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   ssl: {
-    rejectUnauthorized: false // Permite la conexión segura requerida por Aiven
+    rejectUnauthorized: false
   }
 });
 
-// Conectamos a la base de datos
 db.connect((err) => {
   if (err) {
     console.error('Error conectando a MySQL:', err);
@@ -41,10 +41,25 @@ db.connect((err) => {
 });
 
 // ==========================================
+// MIDDLEWARE DE SEGURIDAD (JWT)
+// ==========================================
+const verificarToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(403).json({ error: 'Acceso denegado: Token requerido.' });
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, SECRET_KEY);
+    req.usuario = decoded; // { id, rol, restaurante_id }
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Token inválido o expirado.' });
+  }
+};
+
+// ==========================================
 // RUTAS DE SEGURIDAD: LOGIN
 // ==========================================
-
-// Login con PIN
 app.post('/api/login', (req, res) => {
   const { pin } = req.body;
 
@@ -52,7 +67,7 @@ app.post('/api/login', (req, res) => {
     return res.status(400).json({ error: 'Por favor, ingresa tu PIN.' });
   }
 
-  const sql = 'SELECT id, nombre, rol FROM usuarios WHERE pin = ? AND estado = true';
+  const sql = 'SELECT id, nombre, rol, restaurante_id FROM usuarios WHERE pin = ? AND estado = true';
 
   db.query(sql, [pin], (err, results) => {
     if (err) {
@@ -62,17 +77,44 @@ app.post('/api/login', (req, res) => {
 
     if (results.length > 0) {
       const usuarioEncontrado = results[0];
-      res.json({
-        exito: true,
-        mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`,
-        usuario: usuarioEncontrado
-      });
+      
+      const token = jwt.sign(
+        { id: usuarioEncontrado.id, rol: usuarioEncontrado.rol, restaurante_id: usuarioEncontrado.restaurante_id }, 
+        SECRET_KEY, 
+        { expiresIn: '12h' }
+      );
+
+      res.json({ exito: true, mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`, usuario: usuarioEncontrado, token });
     } else {
-      res.status(401).json({
-        exito: false,
-        error: 'PIN incorrecto. Intenta de nuevo.'
-      });
+      res.status(401).json({ exito: false, error: 'PIN incorrecto. Intenta de nuevo.' });
     }
+  });
+});
+
+// ==========================================
+// CREACIÓN DE EMPLEADOS (PERSONAL)
+// ==========================================
+app.post('/api/usuarios', verificarToken, (req, res) => {
+  // Solo los admin pueden crear personal
+  if (req.usuario.rol !== 'admin') {
+    return res.status(403).json({ error: 'Solo los administradores pueden registrar personal.' });
+  }
+
+  const { nombre, pin, rol } = req.body;
+  if (!nombre || !pin || !rol) {
+    return res.status(400).json({ error: 'Todos los campos son requeridos.' });
+  }
+
+  // Verificamos que no exista el pin
+  db.query('SELECT id FROM usuarios WHERE pin = ?', [pin], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Error interno validando.' });
+    if (results.length > 0) return res.status(400).json({ error: 'El PIN ya existe, escoge otro.' });
+
+    const sql = 'INSERT INTO usuarios (nombre, pin, rol, restaurante_id) VALUES (?, ?, ?, ?)';
+    db.query(sql, [nombre, pin, rol, req.usuario.restaurante_id], (insertErr, result) => {
+      if (insertErr) return res.status(500).json({ error: 'Error guardando usuario.' });
+      res.status(201).json({ exito: true, mensaje: 'Personal registrado correctamente.' });
+    });
   });
 });
 
@@ -80,66 +122,51 @@ app.post('/api/login', (req, res) => {
 // RUTAS DE ADMINISTRACIÓN DE MENÚ (PLATOS)
 // ==========================================
 
-// 1. Obtener todos los platos
-app.get('/api/platos', (req, res) => {
-  const sql = "SELECT * FROM platos";
-
-  db.query(sql, (err, result) => {
-    if (err) {
-      return res.status(500).send('Error obteniendo los platos');
-    }
+app.get('/api/platos', verificarToken, (req, res) => {
+  const sql = "SELECT * FROM platos WHERE restaurante_id = ?";
+  db.query(sql, [req.usuario.restaurante_id], (err, result) => {
+    if (err) return res.status(500).send('Error obteniendo los platos');
     res.json(result);
   });
 });
 
-// 2. Agregar un plato nuevo
-app.post('/api/platos', (req, res) => {
+app.post('/api/platos', verificarToken, (req, res) => {
   const { nombre, descripcion, precio, categoria } = req.body;
   
   if (!nombre || !precio || !categoria) {
     return res.status(400).json({ error: 'Faltan datos obligatorios' });
   }
 
-  const sql = 'INSERT INTO platos (nombre, descripcion, precio, categoria) VALUES (?, ?, ?, ?)';
-  db.query(sql, [nombre, descripcion, precio, categoria], (err, result) => {
-    if (err) {
-      console.error('Error al guardar plato:', err);
-      return res.status(500).json({ error: 'Error al guardar en la base de datos' });
-    }
+  const sql = 'INSERT INTO platos (nombre, descripcion, precio, categoria, restaurante_id) VALUES (?, ?, ?, ?, ?)';
+  db.query(sql, [nombre, descripcion, precio, categoria, req.usuario.restaurante_id], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error al guardar en la base de datos' });
     res.json({ exito: true, id: result.insertId, mensaje: '¡Plato agregado al menú!' });
   });
 });
 
-// 3. Eliminar un plato
-app.delete('/api/platos/:id', (req, res) => {
+app.delete('/api/platos/:id', verificarToken, (req, res) => {
   const { id } = req.params;
-  const sql = 'DELETE FROM platos WHERE id = ?';
-  
-  db.query(sql, [id], (err, result) => {
-    if (err) {
-      console.error('Error al eliminar plato:', err);
-      return res.status(500).json({ error: 'Error al eliminar de la base de datos' });
-    }
+  const sql = 'DELETE FROM platos WHERE id = ? AND restaurante_id = ?';
+  db.query(sql, [id, req.usuario.restaurante_id], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error al eliminar de la base de datos' });
     res.json({ exito: true, mensaje: 'Plato eliminado correctamente' });
   });
 });
 
 // ==========================================
-// RUTAS DE PEDIDOS
+// RUTAS DE PEDIDOS (Área Privada - Cocina)
 // ==========================================
 
-// 1. Obtener todos los pedidos activos (Pendientes o Listos)
-app.get('/api/pedidos/activos', (req, res) => {
+app.get('/api/pedidos/activos', verificarToken, (req, res) => {
   const sql = `
     SELECT p.id, p.mesa, p.estado, p.total, p.fecha_creacion,
            (SELECT GROUP_CONCAT(CONCAT(cantidad, 'x ', plato_nombre) SEPARATOR ', ')
             FROM detalle_pedidos dp WHERE dp.pedido_id = p.id) as items_desc
     FROM pedidos p
-    WHERE p.estado NOT IN ('Cobrado', 'Anulado')
+    WHERE p.estado NOT IN ('Cobrado', 'Anulado') AND p.restaurante_id = ?
     ORDER BY p.id ASC
   `;
-
-  db.query(sql, (err, result) => {
+  db.query(sql, [req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo pedidos' });
 
     const pedidosFormateados = result.map(p => ({
@@ -150,23 +177,20 @@ app.get('/api/pedidos/activos', (req, res) => {
       tiempo: 'Reciente', 
       items: p.items_desc ? p.items_desc.split(', ') : []
     }));
-
     res.json(pedidosFormateados);
   });
 });
 
-// 1.5 Obtener todos los pedidos anulados
-app.get('/api/pedidos/anulados', (req, res) => {
+app.get('/api/pedidos/anulados', verificarToken, (req, res) => {
   const sql = `
     SELECT p.id, p.mesa, p.estado, p.total, p.fecha_creacion,
            (SELECT GROUP_CONCAT(CONCAT(cantidad, 'x ', plato_nombre) SEPARATOR ', ')
             FROM detalle_pedidos dp WHERE dp.pedido_id = p.id) as items_desc
     FROM pedidos p
-    WHERE p.estado = 'Anulado'
+    WHERE p.estado = 'Anulado' AND p.restaurante_id = ?
     ORDER BY p.fecha_creacion DESC
   `;
-
-  db.query(sql, (err, result) => {
+  db.query(sql, [req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo pedidos anulados' });
 
     const pedidosFormateados = result.map(p => ({
@@ -177,52 +201,18 @@ app.get('/api/pedidos/anulados', (req, res) => {
       tiempo: 'Reciente', 
       items: p.items_desc ? p.items_desc.split(', ') : []
     }));
-
     res.json(pedidosFormateados);
   });
 });
 
-// 2. Crear un nuevo pedido
-app.post('/api/pedidos', (req, res) => {
-  const { mesa, total, items } = req.body;
-
-  const sqlPedido = "INSERT INTO pedidos (mesa, total) VALUES (?, ?)";
-
-  db.query(sqlPedido, [mesa, total], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Error al guardar el pedido' });
-    }
-
-    const nuevoPedidoId = result.insertId; 
-
-    if (items && items.length > 0) {
-      const valoresDetalle = items.map(item => [nuevoPedidoId, item.nombre, item.cantidad, item.subtotal]);
-      const sqlDetalle = "INSERT INTO detalle_pedidos (pedido_id, plato_nombre, cantidad, subtotal) VALUES ?";
-
-      db.query(sqlDetalle, [valoresDetalle], (errDetalle) => {
-        if (errDetalle) {
-          console.error(errDetalle);
-          return res.status(500).json({ error: 'Error al guardar el detalle del pedido' });
-        }
-        io.emit('nuevo_pedido'); // <--- NOTIFICACIÓN SOCKET.IO
-        res.status(201).json({ mensaje: '¡Pedido registrado con éxito!', id: nuevoPedidoId });
-      });
-    } else {
-      io.emit('nuevo_pedido'); // <--- NOTIFICACIÓN SOCKET.IO
-      res.status(201).json({ mensaje: 'Pedido creado sin platos (solo cabecera)', id: nuevoPedidoId });
-    }
-  });
-});
-
-// 3. Actualizar el estado de un pedido (Ej: pasarlo a "Listo" o "Cobrado")
-app.put('/api/pedidos/:id/estado', (req, res) => {
+app.put('/api/pedidos/:id/estado', verificarToken, (req, res) => {
   const idPedido = req.params.id;
   const nuevoEstado = req.body.estado;
 
-  const sql = "UPDATE pedidos SET estado = ? WHERE id = ?";
-  db.query(sql, [nuevoEstado, idPedido], (err, result) => {
+  const sql = "UPDATE pedidos SET estado = ? WHERE id = ? AND restaurante_id = ?";
+  db.query(sql, [nuevoEstado, idPedido, req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error actualizando estado' });
+    io.emit('cambio_estado_pedido'); // Notificar a los meseros/clientes si queremos
     res.json({ mensaje: `Pedido ${idPedido} marcado como ${nuevoEstado}` });
   });
 });
@@ -231,32 +221,28 @@ app.put('/api/pedidos/:id/estado', (req, res) => {
 // RUTAS PARA LA CAJA DIARIA
 // ==========================================
 
-// 1. Obtener todos los movimientos (Ingresos unidos con Gastos)
-app.get('/api/caja/movimientos', (req, res) => {
+app.get('/api/caja/movimientos', verificarToken, (req, res) => {
   const sql = `
     SELECT id, CONCAT('Cobro Mesa ', mesa) AS descripcion, total AS monto, 'ingreso' AS tipo, fecha_creacion AS fecha_real, DATE_FORMAT(fecha_creacion, '%h:%i %p') AS hora 
-    FROM pedidos WHERE estado = 'Cobrado'
+    FROM pedidos WHERE estado = 'Cobrado' AND restaurante_id = ?
     
     UNION ALL
     
     SELECT id, descripcion, monto, 'gasto' AS tipo, fecha AS fecha_real, DATE_FORMAT(fecha, '%h:%i %p') AS hora 
-    FROM gastos
+    FROM gastos WHERE restaurante_id = ?
     
     ORDER BY fecha_real DESC
   `;
-
-  db.query(sql, (err, result) => {
+  db.query(sql, [req.usuario.restaurante_id, req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo la caja' });
     res.json(result);
   });
 });
 
-// 2. Guardar un nuevo gasto
-app.post('/api/caja/gasto', (req, res) => {
+app.post('/api/caja/gasto', verificarToken, (req, res) => {
   const { descripcion, monto } = req.body;
-  const sql = "INSERT INTO gastos (descripcion, monto) VALUES (?, ?)";
-
-  db.query(sql, [descripcion, monto], (err, result) => {
+  const sql = "INSERT INTO gastos (descripcion, monto, restaurante_id) VALUES (?, ?, ?)";
+  db.query(sql, [descripcion, monto, req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error guardando el gasto' });
     res.status(201).json({ mensaje: 'Gasto registrado con éxito' });
   });
@@ -266,42 +252,85 @@ app.post('/api/caja/gasto', (req, res) => {
 // RUTAS DE ESTADÍSTICAS
 // ==========================================
 
-// 1. Obtener ventas de los últimos 7 días
-app.get('/api/estadisticas/ventas', (req, res) => {
+app.get('/api/estadisticas/ventas', verificarToken, (req, res) => {
   const sql = `
     SELECT DATE_FORMAT(fecha_creacion, '%Y-%m-%d') as fecha, SUM(total) as total_ventas
     FROM pedidos
-    WHERE estado = 'Cobrado' AND fecha_creacion >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+    WHERE estado = 'Cobrado' AND fecha_creacion >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND restaurante_id = ?
     GROUP BY fecha
     ORDER BY fecha ASC
   `;
-  db.query(sql, (err, result) => {
+  db.query(sql, [req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo estadísticas' });
     res.json(result);
   });
 });
 
-// 2. Obtener los platos más vendidos
-app.get('/api/estadisticas/top-platos', (req, res) => {
+app.get('/api/estadisticas/top-platos', verificarToken, (req, res) => {
   const sql = `
     SELECT plato_nombre as nombre, SUM(cantidad) as ventas
     FROM detalle_pedidos dp
     JOIN pedidos p ON dp.pedido_id = p.id
-    WHERE p.estado = 'Cobrado'
+    WHERE p.estado = 'Cobrado' AND p.restaurante_id = ?
     GROUP BY plato_nombre
     ORDER BY ventas DESC
     LIMIT 5
   `;
-  db.query(sql, (err, result) => {
+  db.query(sql, [req.usuario.restaurante_id], (err, result) => {
     if (err) return res.status(500).json({ error: 'Error obteniendo top platos' });
     res.json(result);
   });
 });
 
 // ==========================================
+// NUEVO: PUBLIC ENDPOINTS (QR) SIN TOKEN
+// ==========================================
+
+// Obtener menú de un restaurante específico
+app.get('/api/publico/menu/:idLocal', (req, res) => {
+  const { idLocal } = req.params;
+  const sql = "SELECT * FROM platos WHERE restaurante_id = ?";
+  db.query(sql, [idLocal], (err, result) => {
+    if (err) return res.status(500).send('Error obteniendo los platos');
+    res.json(result);
+  });
+});
+
+// Enviar pedido desde el QR (Requiere enviar el idLocal en el body)
+app.post('/api/publico/pedidos', (req, res) => {
+  const { mesa, total, items, restaurante_id } = req.body;
+
+  if (!restaurante_id) return res.status(400).json({ error: 'El ID del restaurante es obligatorio' });
+
+  const sqlPedido = "INSERT INTO pedidos (mesa, total, restaurante_id) VALUES (?, ?, ?)";
+
+  db.query(sqlPedido, [mesa, total, restaurante_id], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error al guardar el pedido' });
+
+    const nuevoPedidoId = result.insertId; 
+
+    if (items && items.length > 0) {
+      const valoresDetalle = items.map(item => [nuevoPedidoId, item.nombre, item.cantidad, item.subtotal]);
+      const sqlDetalle = "INSERT INTO detalle_pedidos (pedido_id, plato_nombre, cantidad, subtotal) VALUES ?";
+
+      db.query(sqlDetalle, [valoresDetalle], (errDetalle) => {
+        if (errDetalle) return res.status(500).json({ error: 'Error al guardar el detalle del pedido' });
+        
+        io.emit('nuevo_pedido'); // Se notifica a TODAS las cocinas, el Frontend de cocina filtrará o simplemente recargará.
+        res.status(201).json({ mensaje: '¡Pedido registrado con éxito!', id: nuevoPedidoId });
+      });
+    } else {
+      io.emit('nuevo_pedido');
+      res.status(201).json({ mensaje: 'Pedido creado sin platos (solo cabecera)', id: nuevoPedidoId });
+    }
+  });
+});
+
+
+// ==========================================
 // INICIO DEL SERVIDOR
 // ==========================================
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Servidor Backend corriendo en http://localhost:${PORT}`);
+  console.log(`Servidor Backend multi-tenant corriendo en http://localhost:${PORT}`);
 });
