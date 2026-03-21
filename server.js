@@ -110,7 +110,8 @@ app.post('/api/usuarios', verificarToken, (req, res) => {
     if (err) return res.status(500).json({ error: 'Error interno validando.' });
     if (results.length > 0) return res.status(400).json({ error: 'El PIN ya existe, escoge otro.' });
 
-    const sql = 'INSERT INTO usuarios (nombre, pin, rol, restaurante_id) VALUES (?, ?, ?, ?)';
+    // Explicitly set estado = true for new users
+    const sql = 'INSERT INTO usuarios (nombre, pin, rol, restaurante_id, estado) VALUES (?, ?, ?, ?, true)';
     db.query(sql, [nombre, pin, rol, req.usuario.restaurante_id], (insertErr, result) => {
       if (insertErr) return res.status(500).json({ error: 'Error guardando usuario.' });
       res.status(201).json({ exito: true, mensaje: 'Personal registrado correctamente.' });
