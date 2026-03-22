@@ -152,6 +152,60 @@ app.post('/api/superadmin/restaurantes', (req, res) => {
   });
 });
 
+app.get('/api/superadmin/restaurantes', (req, res) => {
+  const llavendn = req.headers['x-super-admin-key'];
+  if (llavendn !== 'SaaS-Huecas-God-Mode') {
+    return res.status(403).json({ error: 'Acceso denegado. No eres el creador elástica.' });
+  }
+
+  const sql = `
+    SELECT r.id, r.nombre_negocio, r.codigo_acceso, r.fecha_creacion,
+           (SELECT COUNT(*) FROM usuarios u WHERE u.restaurante_id = r.id) as total_empleados,
+           (SELECT COUNT(*) FROM pedidos p WHERE p.restaurante_id = r.id) as total_pedidos
+    FROM restaurantes r
+    ORDER BY r.id DESC
+  `;
+  
+  db.query(sql, (err, results) => {
+    if (err) return res.status(500).json({ error: 'Error obteniendo la lista de inquilinos.' });
+    res.json(results);
+  });
+});
+
+app.delete('/api/superadmin/restaurantes/:id', (req, res) => {
+  const llavendn = req.headers['x-super-admin-key'];
+  if (llavendn !== 'SaaS-Huecas-God-Mode') {
+    return res.status(403).json({ error: 'Acceso denegado.' });
+  }
+
+  const idRestaurante = req.params.id;
+
+  // Borrado Manual en Cascada para evitar errores de Foreign Key si no fue seteado on DB
+  const sqlBorrarDetallesPedidos = `DELETE FROM detalle_pedidos WHERE pedido_id IN (SELECT id FROM pedidos WHERE restaurante_id = ?)`;
+  const sqlBorrarPedidos = `DELETE FROM pedidos WHERE restaurante_id = ?`;
+  const sqlBorrarGastos = `DELETE FROM gastos WHERE restaurante_id = ?`;
+  const sqlBorrarPlatos = `DELETE FROM platos WHERE restaurante_id = ?`;
+  const sqlBorrarUsuarios = `DELETE FROM usuarios WHERE restaurante_id = ?`;
+  const sqlBorrarRestaurante = `DELETE FROM restaurantes WHERE id = ?`;
+
+  db.query(sqlBorrarDetallesPedidos, [idRestaurante], (err1) => {
+    if (err1) return res.status(500).json({ error: 'Error borrando historial de detalles.' });
+    db.query(sqlBorrarPedidos, [idRestaurante], (err2) => {
+      if (err2) return res.status(500).json({ error: 'Error borrando pedidos.' });
+      db.query(sqlBorrarGastos, [idRestaurante], (err3) => {
+        db.query(sqlBorrarPlatos, [idRestaurante], (err4) => {
+          db.query(sqlBorrarUsuarios, [idRestaurante], (err5) => {
+            db.query(sqlBorrarRestaurante, [idRestaurante], (err6) => {
+              if (err6) return res.status(500).json({ error: 'Fallo catastrófico borrando restaurante base.' });
+              res.json({ exito: true, mensaje: 'Franquicia obliterada completamente de la base de datos (En cascada).' });
+            });
+          });
+        });
+      });
+    });
+  });
+});
+
 // ==========================================
 // CONFIGURACIÓN DE FRANQUICIA (MARCA BLANCA)
 // ==========================================
@@ -186,10 +240,10 @@ app.post('/api/usuarios', verificarToken, (req, res) => {
     return res.status(400).json({ error: 'Todos los campos son requeridos.' });
   }
 
-  // Verificamos que no exista el pin
-  db.query('SELECT id FROM usuarios WHERE pin = ?', [pin], (err, results) => {
+  // Verificamos que no exista el pin en ESTE restaurante
+  db.query('SELECT id FROM usuarios WHERE pin = ? AND restaurante_id = ?', [pin, req.usuario.restaurante_id], (err, results) => {
     if (err) return res.status(500).json({ error: 'Error interno validando.' });
-    if (results.length > 0) return res.status(400).json({ error: 'El PIN ya existe, escoge otro.' });
+    if (results.length > 0) return res.status(400).json({ error: 'El PIN ya está en uso por otro empleado en tu restaurante.' });
 
     // Explicitly set estado = true for new users
     const sql = 'INSERT INTO usuarios (nombre, pin, rol, restaurante_id, estado) VALUES (?, ?, ?, ?, true)';
@@ -197,6 +251,35 @@ app.post('/api/usuarios', verificarToken, (req, res) => {
       if (insertErr) return res.status(500).json({ error: 'Error guardando usuario.' });
       res.status(201).json({ exito: true, mensaje: 'Personal registrado correctamente.' });
     });
+  });
+});
+
+app.get('/api/usuarios/restaurante', verificarToken, (req, res) => {
+  if (req.usuario.rol !== 'admin') {
+    return res.status(403).json({ error: 'Solo los administradores pueden ver el personal.' });
+  }
+
+  const sql = "SELECT id, nombre, rol, pin, estado FROM usuarios WHERE restaurante_id = ? ORDER BY id DESC";
+  db.query(sql, [req.usuario.restaurante_id], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Error obteniendo la lista de personal.' });
+    res.json(results);
+  });
+});
+
+app.delete('/api/usuarios/:id', verificarToken, (req, res) => {
+  if (req.usuario.rol !== 'admin') {
+    return res.status(403).json({ error: 'Solo administradores pueden eliminar personal.' });
+  }
+  
+  // Evitar que el administrador se borre a sí mismo accidentalmente
+  if (parseInt(req.params.id) === req.usuario.id) {
+    return res.status(400).json({ error: 'No puedes auto-eliminarte del sistema.' });
+  }
+
+  const sql = "DELETE FROM usuarios WHERE id = ? AND restaurante_id = ?";
+  db.query(sql, [req.params.id, req.usuario.restaurante_id], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error al eliminar el empleado.' });
+    res.json({ exito: true, mensaje: 'Personal eliminado/despedido correctamente.' });
   });
 });
 
