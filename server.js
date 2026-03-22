@@ -159,7 +159,7 @@ app.get('/api/superadmin/restaurantes', (req, res) => {
   }
 
   const sql = `
-    SELECT r.id, r.nombre_negocio, r.codigo_acceso, r.fecha_creacion,
+    SELECT r.id, r.nombre_negocio, r.codigo_acceso,
            (SELECT COUNT(*) FROM usuarios u WHERE u.restaurante_id = r.id) as total_empleados,
            (SELECT COUNT(*) FROM pedidos p WHERE p.restaurante_id = r.id) as total_pedidos
     FROM restaurantes r
@@ -167,7 +167,7 @@ app.get('/api/superadmin/restaurantes', (req, res) => {
   `;
   
   db.query(sql, (err, results) => {
-    if (err) return res.status(500).json({ error: 'Error obteniendo la lista de inquilinos.' });
+    if (err) return res.status(500).json({ error: 'Fallo SQL Crítico: ' + err.message });
     res.json(results);
   });
 });
