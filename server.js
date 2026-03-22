@@ -61,33 +61,94 @@ const verificarToken = (req, res, next) => {
 // RUTAS DE SEGURIDAD: LOGIN
 // ==========================================
 app.post('/api/login', (req, res) => {
-  const { pin } = req.body;
+  const { pin, codigo_restaurante } = req.body;
 
-  if (!pin) {
-    return res.status(400).json({ error: 'Por favor, ingresa tu PIN.' });
+  if (!pin || !codigo_restaurante) {
+    return res.status(400).json({ error: 'Falta el PIN o el Código del Restaurante.' });
   }
 
-  const sql = 'SELECT id, nombre, rol, restaurante_id FROM usuarios WHERE pin = ? AND estado = true';
+  // 1. Buscamos a qué restaurante pertenece ese código textualmente (Ej: 'mi-hueca')
+  const sqlRestaurante = 'SELECT id FROM restaurantes WHERE codigo_acceso = ?';
 
-  db.query(sql, [pin], (err, results) => {
+  db.query(sqlRestaurante, [codigo_restaurante], (err, resRestaurantes) => {
+    if (err) return res.status(500).json({ error: 'Error validando tu franquicia.' });
+    if (resRestaurantes.length === 0) return res.status(404).json({ error: 'Este código de restaurante no existe.' });
+
+    const idDelRestaurante = resRestaurantes[0].id;
+
+    // 2. Ahora buscamos si el PIN pertenece A ESE RESTAURANTE en específico y traemos sus colores
+    const sqlUser = `
+      SELECT u.id, u.nombre, u.rol, u.restaurante_id, r.nombre_negocio, r.color_tema 
+      FROM usuarios u 
+      JOIN restaurantes r ON u.restaurante_id = r.id 
+      WHERE u.pin = ? AND u.estado = true AND u.restaurante_id = ?
+    `;
+    
+    db.query(sqlUser, [pin, idDelRestaurante], (err2, results) => {
+      if (err2) return res.status(500).json({ error: 'Error interno del servidor.' });
+
+      if (results.length > 0) {
+        const usuarioEncontrado = results[0];
+        
+        const token = jwt.sign(
+          { 
+            id: usuarioEncontrado.id, 
+            rol: usuarioEncontrado.rol, 
+            restaurante_id: usuarioEncontrado.restaurante_id,
+            nombre_negocio: usuarioEncontrado.nombre_negocio,
+            color_tema: usuarioEncontrado.color_tema
+          }, 
+          SECRET_KEY, 
+          { expiresIn: '12h' }
+        );
+
+        res.json({ exito: true, mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`, usuario: usuarioEncontrado, token });
+      } else {
+        res.status(401).json({ exito: false, error: 'PIN incorrecto para este restaurante.' });
+      }
+    });
+  });
+});
+
+// ==========================================
+// MODO DIOS: SÚPER ADMIN (CREAR FRANQUICIAS)
+// ==========================================
+app.post('/api/superadmin/restaurantes', (req, res) => {
+  const { nombre_negocio, codigo_acceso, clave_secreta } = req.body;
+
+  // ¡Cambiamos esto por una clave súper segura solo tuya!
+  if (clave_secreta !== 'SaaS-Huecas-God-Mode') {
+    return res.status(403).json({ error: 'Llave de Súper Administrador inválida.' });
+  }
+
+  if (!nombre_negocio || !codigo_acceso) {
+    return res.status(400).json({ error: 'Faltan datos de la franquicia.' });
+  }
+
+  const sqlRestaurante = "INSERT INTO restaurantes (nombre_negocio, codigo_acceso) VALUES (?, ?)";
+  
+  db.query(sqlRestaurante, [nombre_negocio, codigo_acceso], (err, result) => {
     if (err) {
-      console.error('Error al intentar iniciar sesión:', err);
-      return res.status(500).json({ error: 'Error interno del servidor.' });
+      if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: 'Ese código de acceso ya está en uso por otro restaurante.' });
+      return res.status(500).json({ error: 'Error creando la franquicia.' });
     }
 
-    if (results.length > 0) {
-      const usuarioEncontrado = results[0];
+    const nuevoRestauranteId = result.insertId;
+    const pinInicial = '1234'; // PIN por defecto para el dueño
+
+    const sqlPrimerUsuario = "INSERT INTO usuarios (nombre, pin, rol, restaurante_id, estado) VALUES (?, ?, 'admin', ?, true)";
+    db.query(sqlPrimerUsuario, ['Dueño ' + nombre_negocio, pinInicial, nuevoRestauranteId], (errUser) => {
+      if (errUser) return res.status(500).json({ error: 'Franquicia creada, pero falló la creación del usuario administrador.' });
       
-      const token = jwt.sign(
-        { id: usuarioEncontrado.id, rol: usuarioEncontrado.rol, restaurante_id: usuarioEncontrado.restaurante_id }, 
-        SECRET_KEY, 
-        { expiresIn: '12h' }
-      );
-
-      res.json({ exito: true, mensaje: `¡Bienvenido, ${usuarioEncontrado.nombre}!`, usuario: usuarioEncontrado, token });
-    } else {
-      res.status(401).json({ exito: false, error: 'PIN incorrecto. Intenta de nuevo.' });
-    }
+      res.status(201).json({ 
+        exito: true, 
+        mensaje: `¡Franquicia ${nombre_negocio} creada con éxito!`,
+        datos: {
+          codigo_acceso: codigo_acceso,
+          pin_inicial: pinInicial
+        }
+      });
+    });
   });
 });
 
@@ -287,13 +348,24 @@ app.get('/api/estadisticas/top-platos', verificarToken, (req, res) => {
 // NUEVO: PUBLIC ENDPOINTS (QR) SIN TOKEN
 // ==========================================
 
-// Obtener menú de un restaurante específico
+// Obtener menú y configuración del restaurante de forma pública
 app.get('/api/publico/menu/:idLocal', (req, res) => {
   const { idLocal } = req.params;
-  const sql = "SELECT * FROM platos WHERE restaurante_id = ?";
-  db.query(sql, [idLocal], (err, result) => {
-    if (err) return res.status(500).send('Error obteniendo los platos');
-    res.json(result);
+  
+  const sqlRestaurante = "SELECT nombre_negocio, color_tema FROM restaurantes WHERE id = ?";
+  const sqlPlatos = "SELECT * FROM platos WHERE restaurante_id = ?";
+  
+  db.query(sqlRestaurante, [idLocal], (err, resRestaurante) => {
+    if (err || resRestaurante.length === 0) return res.status(500).json({ error: 'Error obteniendo restaurante' });
+    
+    db.query(sqlPlatos, [idLocal], (err2, resPlatos) => {
+      if (err2) return res.status(500).json({ error: 'Error obteniendo los platos' });
+      
+      res.json({
+        restaurante: resRestaurante[0],
+        platos: resPlatos
+      });
+    });
   });
 });
 
