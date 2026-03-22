@@ -153,6 +153,26 @@ app.post('/api/superadmin/restaurantes', (req, res) => {
 });
 
 // ==========================================
+// CONFIGURACIÓN DE FRANQUICIA (MARCA BLANCA)
+// ==========================================
+app.put('/api/restaurantes/tema', verificarToken, (req, res) => {
+  if (req.usuario.rol !== 'admin') {
+    return res.status(403).json({ error: 'Solo los administradores pueden modificar el tema.' });
+  }
+
+  const { color_tema } = req.body;
+  if (!color_tema) {
+    return res.status(400).json({ error: 'El color del tema es requerido.' });
+  }
+
+  const sql = "UPDATE restaurantes SET color_tema = ? WHERE id = ?";
+  db.query(sql, [color_tema, req.usuario.restaurante_id], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Error interno al guardar tu color.' });
+    res.json({ exito: true, mensaje: 'Tema actualizado exquisitamente.' });
+  });
+});
+
+// ==========================================
 // CREACIÓN DE EMPLEADOS (PERSONAL)
 // ==========================================
 app.post('/api/usuarios', verificarToken, (req, res) => {
