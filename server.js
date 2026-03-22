@@ -117,7 +117,7 @@ app.post('/api/superadmin/restaurantes', (req, res) => {
   const { nombre_negocio, codigo_acceso, clave_secreta } = req.body;
 
   // ¡Cambiamos esto por una clave súper segura solo tuya!
-  if (clave_secreta !== 'SaaS-Huecas-God-Mode') {
+  if (clave_secreta !== 'DsyHVJ24fT6B1uMOJFub') {
     return res.status(403).json({ error: 'Llave de Súper Administrador inválida.' });
   }
 
@@ -154,7 +154,7 @@ app.post('/api/superadmin/restaurantes', (req, res) => {
 
 app.get('/api/superadmin/restaurantes', (req, res) => {
   const llavendn = req.headers['x-super-admin-key'];
-  if (llavendn !== 'SaaS-Huecas-God-Mode') {
+  if (llavendn !== 'DsyHVJ24fT6B1uMOJFub') {
     return res.status(403).json({ error: 'Acceso denegado. No eres el creador elástica.' });
   }
 
@@ -174,7 +174,7 @@ app.get('/api/superadmin/restaurantes', (req, res) => {
 
 app.delete('/api/superadmin/restaurantes/:id', (req, res) => {
   const llavendn = req.headers['x-super-admin-key'];
-  if (llavendn !== 'SaaS-Huecas-God-Mode') {
+  if (llavendn !== 'DsyHVJ24fT6B1uMOJFub') {
     return res.status(403).json({ error: 'Acceso denegado.' });
   }
 
