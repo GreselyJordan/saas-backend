@@ -144,7 +144,7 @@ const schemas = {
   pedidoPublico: z.object({
     mesa: z.string().min(1, 'La mesa es requerida'),
     total: z.number({ invalid_type_error: 'El total debe ser un número' }).nonnegative(),
-    restaurante_id: z.number({ invalid_type_error: 'El ID del restaurante es inválido' }).int().positive(),
+    restaurante_id: z.coerce.number({ invalid_type_error: 'El ID del restaurante es inválido' }).int().positive(),
     items: z.array(z.object({
       nombre: z.string(),
       cantidad: z.number().int().positive(),
