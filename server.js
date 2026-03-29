@@ -8,6 +8,7 @@ const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
 const winston = require('winston');
+const bcrypt = require('bcrypt');
 
 // ==========================================
 // LOGGER — winston estructurado
@@ -225,16 +226,29 @@ app.post('/api/login', loginLimiter, validar(schemas.login), async (req, res, ne
 
     const idDelRestaurante = resRestaurantes[0].id;
 
+    // Obtenemos el usuario con el hash del PIN
     const results = await query(
-      `SELECT u.id, u.nombre, u.rol, u.restaurante_id, r.nombre_negocio, r.color_tema 
-       FROM usuarios u 
-       JOIN restaurantes r ON u.restaurante_id = r.id 
-       WHERE u.pin = ? AND u.estado = true AND u.restaurante_id = ?`,
-      [pin, idDelRestaurante]
+      `SELECT u.id, u.nombre, u.rol, u.restaurante_id, u.pin, r.nombre_negocio, r.color_tema
+       FROM usuarios u
+       JOIN restaurantes r ON u.restaurante_id = r.id
+       WHERE u.estado = true AND u.restaurante_id = ?`,
+      [idDelRestaurante]
     );
 
-    if (results.length > 0) {
-      const usuarioEncontrado = results[0];
+    // Comparamos el PIN ingresado con cada hash encontrado
+    let usuarioEncontrado = null;
+    for (const usuario of results) {
+      const pinValido = await bcrypt.compare(pin, usuario.pin);
+      if (pinValido) {
+        usuarioEncontrado = usuario;
+        break;
+      }
+    }
+
+    if (usuarioEncontrado) {
+      // Eliminamos el hash del objeto antes de enviarlo al cliente
+      delete usuarioEncontrado.pin;
+
       const token = jwt.sign(
         {
           id: usuarioEncontrado.id,
@@ -281,11 +295,12 @@ app.post('/api/superadmin/restaurantes', verificarSuperAdmin, validar(schemas.cr
 
       const nuevoRestauranteId = result.insertId;
       const pinInicial = '1234';
+      const pinHasheado = await bcrypt.hash(pinInicial, 10);
 
       await new Promise((resolve, reject) => {
         connection.query(
           "INSERT INTO usuarios (nombre, pin, rol, restaurante_id, estado) VALUES (?, ?, 'admin', ?, true)",
-          ['Dueño ' + nombre_negocio, pinInicial, nuevoRestauranteId],
+          ['Dueño ' + nombre_negocio, pinHasheado, nuevoRestauranteId],
           (err) => err ? reject(err) : resolve()
         );
       });
@@ -384,19 +399,20 @@ app.post('/api/usuarios', verificarToken, validar(schemas.crearUsuario), async (
   const { nombre, pin, rol } = req.body;
 
   try {
-    const existing = await query(
-      'SELECT id FROM usuarios WHERE pin = ? AND restaurante_id = ?',
-      [pin, req.usuario.restaurante_id]
-    );
-    if (existing.length > 0) {
-      return res.status(400).json({ error: 'El PIN ya está en uso por otro empleado en tu restaurante.' });
-    }
+    // Hashear el PIN antes de guardarlo
+    const saltRounds = 10;
+    const pinHasheado = await bcrypt.hash(pin, saltRounds);
+
     await query(
       'INSERT INTO usuarios (nombre, pin, rol, restaurante_id, estado) VALUES (?, ?, ?, ?, true)',
-      [nombre, pin, rol, req.usuario.restaurante_id]
+      [nombre, pinHasheado, rol, req.usuario.restaurante_id]
     );
     res.status(201).json({ exito: true, mensaje: 'Personal registrado correctamente.' });
   } catch (err) {
+    // Si hay error de duplicado, probablemente el PIN ya existe
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: 'El PIN ya está en uso por otro empleado en tu restaurante.' });
+    }
     next(err);
   }
 });
